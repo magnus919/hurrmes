@@ -1,0 +1,19 @@
+[project]
+name = "hurrmes"
+version = "0.1.0"
+description = "A custom TUI client for the Hermes Agent API Server"
+authors = [{ name = "Magnus Hedemark" }]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+
+dependencies = [
+    "prompt-toolkit>=3.0.50",
+    "httpx>=0.28.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+hurrmes = "hurrmes.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["hurrmes*"]
