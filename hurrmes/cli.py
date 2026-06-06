@@ -164,11 +164,11 @@ class HurrmesApp:
             self._invalidate()
 
         @kb.add("enter")
-        def _(event):
+        async def _(event):
             text = self.input_buffer.text.strip()
             if text:
                 self.input_buffer.text = ""
-                self._submit_message(text)
+                await self._submit_message(text)
 
         # ── Style ─────────────────────────────────────────────
         style = Style.from_dict({
@@ -266,25 +266,33 @@ class HurrmesApp:
 
     # ── Text fragment generators ──────────────────────────────
 
+    def _get_transcript_width(self) -> int:
+        """Available width for transcript content."""
+        cols = self.app.output.get_size().columns if self.app.output else 80
+        if self._dashboard_visible():
+            cols -= 38  # dashboard width + border + padding
+        return max(cols - 2, 40)
+
     def _get_transcript_fragments(self):
         """Generate formatted text for the conversation transcript."""
+        width = self._get_transcript_width()
         fragments = []
         fragments.append(("class:status-bar", "  hurrmes — Hermes TUI Client\n"))
         fragments.append(("", "\n"))
 
         for line in self.conversation_lines:
             if line.startswith(">>> "):
-                fragments.append(("bold fg:#d29d00", line[:80]))
+                fragments.append(("bold fg:#d29d00", line[:width]))
                 fragments.append(("", "\n"))
             elif line.startswith("[error]"):
-                fragments.append(("bold fg:#dd4a3a", line[:80]))
+                fragments.append(("bold fg:#dd4a3a", line[:width]))
                 fragments.append(("", "\n"))
             else:
-                fragments.append(("", line[:80]))
+                fragments.append(("", line[:width]))
                 fragments.append(("", "\n"))
 
         if self._accumulated:
-            fragments.append(("fg:#eceae5", self._accumulated[:200]))
+            fragments.append(("fg:#eceae5", self._accumulated[:width * 3]))
 
         return fragments
 
