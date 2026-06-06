@@ -17,6 +17,7 @@ from pathlib import Path
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     Float,
@@ -121,7 +122,7 @@ class HurrmesApp:
                 wrap_lines=True,
                 style=f"bg:{self.theme.dashboard_bg}",
             ),
-            filter=self._dashboard_visible,
+            filter=Condition(self._dashboard_visible),
         )
 
         # ── Main layout ───────────────────────────────────────
