@@ -9,14 +9,12 @@ dashboard panel.
 ## Quick Start
 
 ```bash
-# Install with dev dependencies
+# From a fresh clone — auto-installs and runs
+./run.sh
+
+# Or with dev dependencies (linting, testing)
 pip install -e ".[dev]"
-
-# Run the app
 hurrmes
-
-# Or
-python -m hurrmes
 ```
 
 ## Development Commands
