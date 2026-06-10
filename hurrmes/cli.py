@@ -8,16 +8,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import os
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     Dimension,
@@ -32,6 +35,9 @@ from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
+from rich.console import Console as RichConsole
+from rich.markdown import Markdown as RichMarkdown
+from rich.syntax import Syntax as RichSyntax
 
 from hurrmes.client import HermesClient
 from hurrmes.config import ensure_config
@@ -44,6 +50,198 @@ from hurrmes.dashboard import (
     get_git_branch,
 )
 from hurrmes.theme import get_theme
+
+# ── Structured transcript entry ────────────────────────────────
+
+ROLE_USER = "user"
+ROLE_ASSISTANT = "assistant"
+ROLE_ERROR = "error"
+ROLE_SYSTEM = "system"
+
+
+@dataclass
+class TranscriptEntry:
+    """A single entry in the conversation transcript."""
+
+    role: str
+    content: str
+    rendered: list[tuple[str, str]] | None = None
+
+
+# ── Spinner characters ─────────────────────────────────────────
+
+_SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+# ── Markdown rendering ─────────────────────────────────────────
+
+
+def _render_rich_markdown(text: str, width: int) -> list[tuple[str, str]]:
+    try:
+        buf = io.StringIO()
+        console = RichConsole(
+            width=width,
+            force_terminal=True,
+            color_system="truecolor",
+            file=buf,
+            legacy_windows=False,
+        )
+        console.print(RichMarkdown(text))
+        ansi_output = buf.getvalue()
+        if ansi_output.strip():
+            return cast("list[tuple[str, str]]", to_formatted_text(ANSI(ansi_output)))
+    except Exception:
+        pass
+    return [("", text)]
+
+
+def _render_rich_code_block(code: str, lang: str, width: int) -> list[tuple[str, str]]:
+    try:
+        buf = io.StringIO()
+        console = RichConsole(
+            width=width,
+            force_terminal=True,
+            color_system="truecolor",
+            file=buf,
+            legacy_windows=False,
+        )
+        console.print(RichSyntax(code, lang or "text", background_color="default"))
+        ansi_output = buf.getvalue()
+        if ansi_output.strip():
+            return cast("list[tuple[str, str]]", to_formatted_text(ANSI(ansi_output)))
+    except Exception:
+        pass
+    return [("", code)]
+
+
+# ── Slash commands ─────────────────────────────────────────────
+
+
+async def _handle_slash_command(app: HurrmesApp, text: str) -> bool:
+    """Handle a slash command. Returns True if the command was handled."""
+    parts = text[1:].split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    args = parts[1:]
+
+    if cmd == "clear":
+        app.transcript.clear()
+        app.messages.clear()
+        app.dashboard.prompt_tokens = 0
+        app.dashboard.completion_tokens = 0
+        app.dashboard.total_tokens = 0
+        app.dashboard.api_calls = 0
+        app.dashboard.cost_usd = 0.0
+        app._invalidate()
+        return True
+
+    if cmd in ("help", "?"):
+        app.transcript.append(
+            TranscriptEntry(
+                role=ROLE_SYSTEM,
+                content=(
+                    "Available commands:\n"
+                    "  /help, /?   — Show this help\n"
+                    "  /clear      — Clear the conversation\n"
+                    "  /models     — List available models (requires API)\n"
+                    "  /config     — Show current config\n"
+                    "  /export     — Export conversation as markdown\n"
+                    "  /cost       — Toggle cost display\n"
+                    "  /theme      — Switch theme (amber, dark)"
+                ),
+            )
+        )
+        app._invalidate()
+        return True
+
+    if cmd == "models":
+        app.transcript.append(
+            TranscriptEntry(
+                role=ROLE_SYSTEM,
+                content=f"Connected to: {app.config.server.base_url}\nDefault model: {app.config.default_model}",
+            )
+        )
+        app._invalidate()
+        return True
+
+    if cmd == "config":
+        cfg_lines = [
+            f"Server: {app.config.server.base_url}",
+            f"API Key: {'***' if app.config.server.api_key else '(not set)'}",
+            f"Dashboard: {app.config.display.dashboard}",
+            f"Theme: {app.config.display.theme}",
+            f"Model: {app.config.default_model}",
+        ]
+        app.transcript.append(TranscriptEntry(role=ROLE_SYSTEM, content="\n".join(cfg_lines)))
+        app._invalidate()
+        return True
+
+    if cmd == "export":
+        lines = ["# hurrmes — Conversation Export\n"]
+        for entry in app.transcript:
+            if entry.role == ROLE_USER:
+                lines.append(f"## You\n\n{entry.content}\n")
+            elif entry.role == ROLE_ASSISTANT:
+                lines.append(f"## Hermes\n\n{entry.content}\n")
+            elif entry.role == ROLE_ERROR:
+                lines.append(f"## Error\n\n{entry.content}\n")
+        export_text = "\n".join(lines)
+        # Store in a transcript entry for display
+        app.transcript.append(
+            TranscriptEntry(
+                role=ROLE_SYSTEM,
+                content=f"Exported {len([e for e in app.transcript if e.role in (ROLE_USER, ROLE_ASSISTANT)])} messages.\n\n```\n{export_text[:1000]}\n```",
+            )
+        )
+        app._invalidate()
+        return True
+
+    if cmd == "cost":
+        app.config.display.show_cost = not app.config.display.show_cost
+        app.transcript.append(
+            TranscriptEntry(
+                role=ROLE_SYSTEM,
+                content=f"Cost display: {'on' if app.config.display.show_cost else 'off'}",
+            )
+        )
+        app._invalidate()
+        return True
+
+    if cmd == "theme":
+        if args:
+            from hurrmes.theme import THEMES
+
+            if args[0] in THEMES:
+                app.config.display.theme = args[0]
+                app.theme = get_theme(args[0])
+                app._rebuild_style()
+                app.transcript.append(
+                    TranscriptEntry(role=ROLE_SYSTEM, content=f"Theme changed to: {args[0]}")
+                )
+            else:
+                app.transcript.append(
+                    TranscriptEntry(
+                        role=ROLE_ERROR,
+                        content=f"Unknown theme: {args[0]}. Available: {', '.join(THEMES)}",
+                    )
+                )
+        else:
+            from hurrmes.theme import THEMES
+
+            app.transcript.append(
+                TranscriptEntry(
+                    role=ROLE_SYSTEM,
+                    content=f"Available themes: {', '.join(THEMES)}\nCurrent: {app.config.display.theme}",
+                )
+            )
+        app._invalidate()
+        return True
+
+    return False
+
+
+# ── Main application class ─────────────────────────────────────
 
 
 class HurrmesApp:
@@ -60,13 +258,33 @@ class HurrmesApp:
         self._is_streaming = False
         self._accumulated = ""
         self._last_tick = 0.0
+        self._spinner_idx = 0
 
-        # Conversation history buffer
-        self.conversation_lines: list[str] = []
-        self._rendered_history: list[str] = []
+        # Structured transcript
+        self.transcript: list[TranscriptEntry] = []
 
         # Build the UI
         self._build_ui()
+
+    def _rebuild_style(self) -> None:
+        """Rebuild the style dict after a theme change."""
+        style = Style.from_dict(
+            {
+                "status-bar": f"bg:{self.theme.dashboard_border} fg:{self.theme.accent}",
+                "status-bar.key": f"bg:{self.theme.dashboard_border} fg:{self.theme.muted}",
+                "dashboard-label": f"fg:{self.theme.dashboard_label}",
+                "dashboard-value": f"fg:{self.theme.dashboard_value}",
+                "dashboard-dim": f"fg:{self.theme.dashboard_dim}",
+                "dashboard-section": f"fg:{self.theme.accent} bold",
+                "transcript-user": f"bold fg:{self.theme.accent}",
+                "transcript-assistant": f"fg:{self.theme.fg}",
+                "transcript-error": f"bold fg:{self.theme.status_bad}",
+                "transcript-system": f"fg:{self.theme.muted} italic",
+                "transcript-divider": f"fg:{self.theme.border}",
+                "transcript-header": f"fg:{self.theme.accent} bold",
+            }
+        )
+        self.app.style = style
 
     def _build_ui(self) -> None:
         """Construct the prompt_toolkit UI layout."""
@@ -82,9 +300,9 @@ class HurrmesApp:
             always_hide_cursor=True,
         )
 
-        # ── Input buffer ──────────────────────────────────────
+        # ── Input buffer (multiline) ──────────────────────────
         self.input_buffer = Buffer(
-            multiline=False,
+            multiline=True,
             on_text_changed=self._on_input_changed,
         )
         input_window = Window(
@@ -92,8 +310,9 @@ class HurrmesApp:
                 buffer=self.input_buffer,
                 focusable=True,
             ),
-            height=Dimension(min=1, max=3),
+            height=Dimension(min=1, max=8),
             dont_extend_height=False,
+            wrap_lines=True,
         )
 
         # ── Status bar ────────────────────────────────────────
@@ -123,7 +342,6 @@ class HurrmesApp:
         )
 
         # ── Main layout ───────────────────────────────────────
-        # Split: transcript fills, dashboard on right when wide
         main_area = VSplit(
             [
                 HSplit([transcript_window, input_window]),
@@ -157,35 +375,33 @@ class HurrmesApp:
 
         @kb.add("c-l")
         def _(_event: object) -> None:
-            self.conversation_lines.clear()
+            self.transcript.clear()
             self._invalidate()
 
+        # Enter submits, Alt+Enter inserts newline
         @kb.add("enter")
         async def _(_event: object) -> None:
-            text = self.input_buffer.text.strip()
-            if text:
+            text = self.input_buffer.text
+            if text.strip():
                 self.input_buffer.text = ""
                 await self._submit_message(text)
 
+        @kb.add("escape", "enter")
+        def _(_event: object) -> None:
+            self.input_buffer.insert_text("\n")
+
         # ── Style ─────────────────────────────────────────────
-        style = Style.from_dict(
-            {
-                "status-bar": f"bg:{self.theme.dashboard_border} fg:{self.theme.accent}",
-                "status-bar.key": f"bg:{self.theme.dashboard_border} fg:{self.theme.muted}",
-                "dashboard-label": f"fg:{self.theme.dashboard_label}",
-                "dashboard-value": f"fg:{self.theme.dashboard_value}",
-                "dashboard-dim": f"fg:{self.theme.dashboard_dim}",
-                "dashboard-section": f"fg:{self.theme.accent} bold",
-            }
-        )
+        self._rebuild_style()
 
         self.app: Application[Any] = Application(
             layout=Layout(root, focused_element=self.input_buffer),
             key_bindings=kb,
-            style=style,
+            style=self.app.style if hasattr(self, "app") else Style.from_dict({}),
             full_screen=True,
             mouse_support=True,
         )
+        # Re-apply the proper style
+        self._rebuild_style()
 
     # ── Layout helpers ─────────────────────────────────────────
 
@@ -198,7 +414,7 @@ class HurrmesApp:
 
     def _on_input_changed(self, buf: Buffer) -> None:
         """Callback when input text changes."""
-        pass
+        _ = buf  # unused
 
     def _invalidate(self) -> None:
         """Request a UI redraw."""
@@ -208,27 +424,35 @@ class HurrmesApp:
 
     async def _submit_message(self, text: str) -> None:
         """Send a user message and stream the response."""
+        # Handle slash commands
+        if text.startswith("/"):
+            handled = await _handle_slash_command(self, text)
+            if handled:
+                return
+
+        # Store user message
         self.messages.append({"role": "user", "content": text})
-        self.conversation_lines.append(f">>> {text}")
+        self.transcript.append(TranscriptEntry(role=ROLE_USER, content=text))
 
         self._is_streaming = True
         self._accumulated = ""
+        self._spinner_idx = 0
         self._invalidate()
 
         try:
             async for event in self.client.chat_stream(self.messages):
                 if event["type"] == "delta":
                     self._accumulated += event["content"]
-                    # Update dashboard periodically
+                    self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_CHARS)
                     self._tick_dashboard()
                     self._invalidate()
                 elif event["type"] == "done":
                     if self._accumulated:
                         self.messages.append({"role": "assistant", "content": self._accumulated})
-                        self.conversation_lines.append(self._accumulated)
+                        entry = TranscriptEntry(role=ROLE_ASSISTANT, content=self._accumulated)
+                        self.transcript.append(entry)
                         self._accumulated = ""
 
-                    # Update token wallet from usage
                     usage = event.get("usage", {})
                     if usage:
                         self.dashboard.prompt_tokens = usage.get("prompt_tokens", 0)
@@ -238,11 +462,13 @@ class HurrmesApp:
                     self._is_streaming = False
                     self._invalidate()
                 elif event["type"] == "error":
-                    self.conversation_lines.append(f"[error] {event['content']}")
+                    self.transcript.append(
+                        TranscriptEntry(role=ROLE_ERROR, content=event["content"])
+                    )
                     self._is_streaming = False
                     self._invalidate()
         except Exception as e:
-            self.conversation_lines.append(f"[error] {e}")
+            self.transcript.append(TranscriptEntry(role=ROLE_ERROR, content=str(e)))
             self._is_streaming = False
             self._invalidate()
 
@@ -271,23 +497,52 @@ class HurrmesApp:
     def _get_transcript_fragments(self) -> list[tuple[str, str]]:
         """Generate formatted text for the conversation transcript."""
         width = self._get_transcript_width()
-        fragments = []
-        fragments.append(("class:status-bar", "  hurrmes — Hermes TUI Client\n"))
+        fragments: list[tuple[str, str]] = []
+
+        # Header
+        fragments.append(("class:transcript-header", "  hurrmes — Hermes TUI Client"))
+        fragments.append(("", "\n"))
+        fragments.append(("class:transcript-divider", f"  {'─' * (width - 4)}"))
         fragments.append(("", "\n"))
 
-        for line in self.conversation_lines:
-            if line.startswith(">>> "):
-                fragments.append(("bold fg:#d29d00", line[:width]))
+        for entry in self.transcript:
+            if entry.role == ROLE_USER:
+                fragments.append(("class:transcript-divider", ""))
+                fragments.append(("class:transcript-user", "  \u25b6  You"))
                 fragments.append(("", "\n"))
-            elif line.startswith("[error]"):
-                fragments.append(("bold fg:#dd4a3a", line[:width]))
+                fragments.append(("class:transcript-user", f"  {entry.content[: width - 4]}"))
+                fragments.append(("", "\n\n"))
+
+            elif entry.role == ROLE_ASSISTANT:
+                fragments.append(("class:transcript-divider", f"  {'─' * (width - 4)}"))
                 fragments.append(("", "\n"))
-            else:
-                fragments.append(("", line[:width]))
+                fragments.append(("class:transcript-assistant", "  \u25b6  Hermes"))
+                fragments.append(("", "\n"))
+                # Render markdown
+                rendered = _render_rich_markdown(entry.content, width - 4)
+                for style_str, text in rendered:
+                    fragments.append((style_str, text))
+                fragments.append(("", "\n\n"))
+
+            elif entry.role == ROLE_ERROR:
+                fragments.append(
+                    ("class:transcript-error", f"  \u2716  {entry.content[: width - 4]}")
+                )
                 fragments.append(("", "\n"))
 
+            elif entry.role == ROLE_SYSTEM:
+                fragments.append(("class:transcript-system", f"  {entry.content[: width - 4]}"))
+                fragments.append(("", "\n"))
+
+        # Streaming content with spinner
         if self._accumulated:
-            fragments.append(("fg:#eceae5", self._accumulated[: width * 3]))
+            spinner = _SPINNER_CHARS[self._spinner_idx % len(_SPINNER_CHARS)]
+            fragments.append(("class:transcript-divider", f"  {'─' * (width - 4)}"))
+            fragments.append(("", "\n"))
+            fragments.append(("class:transcript-assistant", f"  {spinner}  Hermes"))
+            fragments.append(("", "\n"))
+            fragments.append(("", f"  {self._accumulated}"))
+            fragments.append(("", "\n"))
 
         return fragments
 
@@ -296,9 +551,14 @@ class HurrmesApp:
         cols = self.app.output.get_size().columns if self.app.output else 80
         model = self.config.default_model
         model_short = model.split("/")[-1] if "/" in model else model
-        msgs = len(self.messages) // 2
-        status = "⚡ streaming" if self._is_streaming else "● idle"
+        msgs = sum(1 for e in self.transcript if e.role in (ROLE_USER, ROLE_ASSISTANT)) // 2
         dur = datetime.now().strftime("%H:%M")
+
+        if self._is_streaming:
+            spinner = _SPINNER_CHARS[self._spinner_idx % len(_SPINNER_CHARS)]
+            status = f"{spinner} streaming"
+        else:
+            status = "\u25cf idle"
 
         left = f"  {status}  {model_short}  {msgs} exchanges  {dur} "
 
@@ -306,13 +566,10 @@ class HurrmesApp:
             cost_str = format_cost(self.dashboard.cost_usd)
             left += f"  {cost_str} "
 
-        right = ""
-        if self._dashboard_visible():
-            right = " Ctrl+D quit  Ctrl+L clear  "
-        else:
-            right = " Ctrl+D quit  Ctrl+L clear  /dashboard  "
+        right = "  /help  "
+        if not self._dashboard_visible():
+            right = "  /help  /dashboard  "
 
-        # Pad the middle so right aligns
         avail = max(cols - get_cwidth(left) - get_cwidth(right) - 2, 1)
         middle = " " * avail
 
@@ -418,14 +675,23 @@ class HurrmesApp:
 
     async def run(self) -> None:
         """Start the application."""
-        # Welcome message
-        self.conversation_lines.append("Connected to Hermes API at " + self.config.server.base_url)
-        self.conversation_lines.append("Type a message and press Enter to chat.")
-        self.conversation_lines.append("")
+        self.transcript.append(
+            TranscriptEntry(
+                role=ROLE_SYSTEM,
+                content=(
+                    f"Connected to {self.config.server.base_url}\n"
+                    f"Model: {self.config.default_model}\n"
+                    "Type a message and press Enter to chat.\n"
+                    "  /help         — Show available commands\n"
+                    "  Enter         — Send message\n"
+                    "  Alt+Enter     — New line\n"
+                    "  Ctrl+D        — Quit\n"
+                    "  Ctrl+L        — Clear screen"
+                ),
+            )
+        )
 
-        # Collect initial dashboard data
         self._tick_dashboard()
-
         await self.app.run_async()
 
 
