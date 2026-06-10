@@ -138,3 +138,124 @@ class TestHermesClient:
             async for _ in client.chat_stream([{"role": "user", "content": "hello"}]):
                 pass
             assert client.session_id == "sess-789"
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_http_error(self, client: HermesClient) -> None:
+        """Chat stream should yield error on non-200 HTTP response."""
+        mock_client = _mock_async_client()
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 401
+        mock_response.aread = AsyncMock(return_value=b"Unauthorized")
+
+        mock_client.stream = MagicMock(return_value=_StreamContextManager(mock_response))
+
+        results = []
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            async for event in client.chat_stream([{"role": "user", "content": "hello"}]):
+                results.append(event)
+
+        assert len(results) == 1
+        assert results[0]["type"] == "error"
+        assert "401" in results[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_with_delta_and_usage(self, client: HermesClient) -> None:
+        """Chat stream should yield delta events and final usage."""
+        mock_client = _mock_async_client()
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.headers = {}
+
+        async def mock_aiter_lines():
+            yield 'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+            yield 'data: {"choices":[{"delta":{"content":" world"}}]}'
+            yield 'data: {"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}'
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+        mock_client.stream = MagicMock(return_value=_StreamContextManager(mock_response))
+
+        results = []
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            async for event in client.chat_stream([{"role": "user", "content": "hello"}]):
+                results.append(event)
+
+        assert len(results) == 3
+        assert results[0] == {"type": "delta", "content": "Hello"}
+        assert results[1] == {"type": "delta", "content": " world"}
+        assert results[2]["type"] == "done"
+        assert results[2]["usage"]["total_tokens"] == 15
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_json_decode_skips_bad_data(self, client: HermesClient) -> None:
+        """Chat stream should skip lines with invalid JSON."""
+        mock_client = _mock_async_client()
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.headers = {}
+
+        async def mock_aiter_lines():
+            yield "data: {invalid json}"
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+        mock_client.stream = MagicMock(return_value=_StreamContextManager(mock_response))
+
+        results = []
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            async for event in client.chat_stream([{"role": "user", "content": "hello"}]):
+                results.append(event)
+
+        # Only the done event, no delta (bad JSON was skipped)
+        assert len(results) == 1
+        assert results[0]["type"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_skips_non_data_lines(self, client: HermesClient) -> None:
+        """Chat stream should skip lines not starting with 'data:'."""
+        mock_client = _mock_async_client()
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.headers = {}
+
+        async def mock_aiter_lines():
+            yield ": keep-alive comment"
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+        mock_client.stream = MagicMock(return_value=_StreamContextManager(mock_response))
+
+        results = []
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            async for event in client.chat_stream([{"role": "user", "content": "hello"}]):
+                results.append(event)
+
+        assert len(results) == 1
+        assert results[0]["type"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_chat_connect_error(self, client: HermesClient) -> None:
+        """chat() should return error dict on connection error."""
+        mock_client = _mock_async_client()
+        mock_client.post.side_effect = httpx.ConnectError("Connection refused")
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await client.chat([{"role": "user", "content": "hello"}])
+            assert "error" in result
+            assert "Cannot connect" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_chat_http_200_success(self, client: HermesClient) -> None:
+        """chat() should return JSON data on 200 with session ID."""
+        mock_client = _mock_async_client()
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Hello"}}]}
+        mock_response.headers = {"X-Hermes-Session-Id": "sess-999"}
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await client.chat([{"role": "user", "content": "hello"}])
+            assert result == {"choices": [{"message": {"content": "Hello"}}]}
+            assert client.session_id == "sess-999"

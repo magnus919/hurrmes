@@ -90,3 +90,34 @@ class TestConfigEnvOverride:
             content = dest.read_text()
             assert "[server]" in content
             assert "[display]" in content
+
+
+class TestEnsureConfig:
+    """Tests for ensure_config."""
+
+    def test_ensure_config_returns_config_when_exists(self, tmp_path: Path) -> None:
+        """ensure_config should return config when config file already exists."""
+        config_path = tmp_path / ".hurrmes" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("[server]\nhost = '0.0.0.0'\n")
+
+        with patch("hurrmes.config.DEFAULT_CONFIG_PATH", config_path):
+            from hurrmes.config import ensure_config
+
+            cfg = ensure_config()
+            assert cfg.server.host == "0.0.0.0"
+
+    def test_ensure_config_creates_when_missing(self, tmp_path: Path) -> None:
+        """ensure_config should create config when it doesn't exist."""
+        config_path = tmp_path / ".hurrmes" / "config.toml"
+        home_dir = tmp_path / ".hurrmes"
+
+        with (
+            patch("hurrmes.config.DEFAULT_CONFIG_PATH", config_path),
+            patch("hurrmes.config.HURRMES_HOME", home_dir),
+        ):
+            from hurrmes.config import ensure_config
+
+            cfg = ensure_config()
+            assert config_path.exists()
+            assert cfg.server.host == "127.0.0.1"

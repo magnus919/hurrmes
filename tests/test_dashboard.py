@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import subprocess
+from unittest.mock import patch
+
 from hurrmes.dashboard import (
     DashboardData,
     TodoItem,
+    collect_system_info,
     format_cost,
     format_cwd,
     format_tokens,
+    get_git_branch,
 )
 
 
@@ -59,7 +64,6 @@ class TestFormatCwd:
     def test_home_replacement(self) -> None:
         """Home directory should be replaced with ~."""
         result = format_cwd("/home/user/projects/hurrmes", max_len=100)
-        # Should contain ~ since home is replaced
         assert "~" in result or "/home/" in result
 
     def test_long_path_truncation(self) -> None:
@@ -67,6 +71,69 @@ class TestFormatCwd:
         path = "/a/very/long/path/that/should/be/truncated/project/src/utils"
         result = format_cwd(path, max_len=20)
         assert "..." in result
+
+    def test_home_replacement_then_truncation(self) -> None:
+        """Home path that truncates after replacement."""
+        with patch("pathlib.Path.home", return_value="/home/user"):
+            result = format_cwd(
+                "/home/user/very/long/nested/directory/structure/project/src", max_len=20
+            )
+            assert "..." in result
+
+
+class TestCollectSystemInfo:
+    """Tests for collect_system_info."""
+
+    def test_returns_load_and_time(self) -> None:
+        """collect_system_info should return loadavg string and time string."""
+        load_str, time_str = collect_system_info()
+        assert isinstance(load_str, str)
+        assert isinstance(time_str, str)
+        assert time_str != ""
+
+    def test_load_format(self) -> None:
+        """Loadavg should contain three space-separated numbers."""
+        load_str, _ = collect_system_info()
+        parts = load_str.split()
+        assert len(parts) == 3
+        for p in parts:
+            float(p)  # should not raise
+
+    @patch("os.getloadavg", side_effect=OSError)
+    def test_load_error_fallback(self, _: object) -> None:
+        """When getloadavg raises OSError, should return --."""
+        load_str, _ = collect_system_info()
+        assert load_str == "--"
+
+
+class TestGetGitBranch:
+    """Tests for get_git_branch."""
+
+    def test_in_git_repo(self) -> None:
+        """Should return current branch name when in a git repo."""
+        branch = get_git_branch()
+        assert isinstance(branch, str)
+        assert branch != ""
+
+    def test_non_git_directory(self) -> None:
+        """Should return empty string when not in a git repo."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 128
+            mock_run.return_value.stdout = ""
+            branch = get_git_branch(cwd="/tmp")
+            assert branch == ""
+
+    def test_file_not_found(self) -> None:
+        """Should return empty string when git is not installed."""
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            branch = get_git_branch()
+            assert branch == ""
+
+    def test_subprocess_error(self) -> None:
+        """Should return empty string on subprocess error."""
+        with patch("subprocess.run", side_effect=subprocess.SubprocessError):
+            branch = get_git_branch()
+            assert branch == ""
 
 
 class TestDashboardData:
