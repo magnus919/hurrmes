@@ -391,17 +391,30 @@ class HurrmesApp:
             self.input_buffer.insert_text("\n")
 
         # ── Style ─────────────────────────────────────────────
-        self._rebuild_style()
+        base_style = Style.from_dict(
+            {
+                "status-bar": f"bg:{self.theme.dashboard_border} fg:{self.theme.accent}",
+                "status-bar.key": f"bg:{self.theme.dashboard_border} fg:{self.theme.muted}",
+                "dashboard-label": f"fg:{self.theme.dashboard_label}",
+                "dashboard-value": f"fg:{self.theme.dashboard_value}",
+                "dashboard-dim": f"fg:{self.theme.dashboard_dim}",
+                "dashboard-section": f"fg:{self.theme.accent} bold",
+                "transcript-user": f"bold fg:{self.theme.accent}",
+                "transcript-assistant": f"fg:{self.theme.fg}",
+                "transcript-error": f"bold fg:{self.theme.status_bad}",
+                "transcript-system": f"fg:{self.theme.muted} italic",
+                "transcript-divider": f"fg:{self.theme.border}",
+                "transcript-header": f"fg:{self.theme.accent} bold",
+            }
+        )
 
         self.app: Application[Any] = Application(
             layout=Layout(root, focused_element=self.input_buffer),
             key_bindings=kb,
-            style=self.app.style if hasattr(self, "app") else Style.from_dict({}),
+            style=base_style,
             full_screen=True,
             mouse_support=True,
         )
-        # Re-apply the proper style
-        self._rebuild_style()
 
     # ── Layout helpers ─────────────────────────────────────────
 
