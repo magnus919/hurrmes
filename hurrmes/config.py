@@ -43,7 +43,7 @@ class Config:
     session_autosave: bool = True
 
     @classmethod
-    def load(cls, path: str | Path | None = None) -> "Config":
+    def load(cls, path: str | Path | None = None) -> Config:
         cfg = cls()
 
         path = Path(path) if path else DEFAULT_CONFIG_PATH
@@ -85,16 +85,16 @@ class Config:
             "[server]",
             f'host = "{self.server.host}"',
             f"port = {self.server.port}",
-            f'tls = {"true" if self.server.tls else "false"}',
+            f"tls = {'true' if self.server.tls else 'false'}",
             "",
             "[display]",
-            f'dashboard = {"true" if self.display.dashboard else "false"}',
+            f"dashboard = {'true' if self.display.dashboard else 'false'}",
             f"dashboard_min_width = {self.display.dashboard_min_width}",
-            f'show_cost = {"true" if self.display.show_cost else "false"}',
+            f"show_cost = {'true' if self.display.show_cost else 'false'}",
             f'theme = "{self.display.theme}"',
             "",
             f'default_model = "{self.default_model}"',
-            f'session_autosave = {"true" if self.session_autosave else "false"}',
+            f"session_autosave = {'true' if self.session_autosave else 'false'}",
             "",
         ]
         # Don't write the API key — it comes from env or manual config

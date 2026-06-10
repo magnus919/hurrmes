@@ -8,11 +8,19 @@ build/
 .venv/
 venv/
 
+# Environment
+.env
+
 # Editor
 *.swp
 *.swo
 *~
 .DS_Store
+.idea/
+.vscode/
 
 # Project
 .hurrmes/
+
+# OS
+Thumbs.db

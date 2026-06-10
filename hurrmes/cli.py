@@ -7,32 +7,29 @@ a persistent right-side dashboard on wide terminals.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
+from typing import Any
 
-from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
-    Float,
+    Dimension,
     FloatContainer,
+    FormattedTextControl,
     HSplit,
+    Layout,
     VSplit,
     Window,
-    WindowAlign,
-    FormattedTextControl,
-    Layout,
-    Dimension,
 )
 from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.layout.controls import BufferControl
-from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
@@ -58,7 +55,7 @@ class HurrmesApp:
         self.client = HermesClient(self.config)
 
         # Session state
-        self.messages: list[dict] = []
+        self.messages: list[dict[str, Any]] = []
         self.dashboard = DashboardData()
         self._is_streaming = False
         self._accumulated = ""
@@ -148,39 +145,41 @@ class HurrmesApp:
         kb = KeyBindings()
 
         @kb.add("c-c")
-        def _(event):
+        def _(event: object) -> None:
             if self._is_streaming:
                 self._is_streaming = False
             else:
-                event.app.exit()
+                event.app.exit()  # type: ignore[attr-defined]
 
         @kb.add("c-d")
-        def _(event):
-            event.app.exit()
+        def _(event: object) -> None:
+            event.app.exit()  # type: ignore[attr-defined]
 
         @kb.add("c-l")
-        def _(event):
+        def _(_event: object) -> None:
             self.conversation_lines.clear()
             self._invalidate()
 
         @kb.add("enter")
-        async def _(event):
+        async def _(_event: object) -> None:
             text = self.input_buffer.text.strip()
             if text:
                 self.input_buffer.text = ""
                 await self._submit_message(text)
 
         # ── Style ─────────────────────────────────────────────
-        style = Style.from_dict({
-            "status-bar": f"bg:{self.theme.dashboard_border} fg:{self.theme.accent}",
-            "status-bar.key": f"bg:{self.theme.dashboard_border} fg:{self.theme.muted}",
-            "dashboard-label": f"fg:{self.theme.dashboard_label}",
-            "dashboard-value": f"fg:{self.theme.dashboard_value}",
-            "dashboard-dim": f"fg:{self.theme.dashboard_dim}",
-            "dashboard-section": f"fg:{self.theme.accent} bold",
-        })
+        style = Style.from_dict(
+            {
+                "status-bar": f"bg:{self.theme.dashboard_border} fg:{self.theme.accent}",
+                "status-bar.key": f"bg:{self.theme.dashboard_border} fg:{self.theme.muted}",
+                "dashboard-label": f"fg:{self.theme.dashboard_label}",
+                "dashboard-value": f"fg:{self.theme.dashboard_value}",
+                "dashboard-dim": f"fg:{self.theme.dashboard_dim}",
+                "dashboard-section": f"fg:{self.theme.accent} bold",
+            }
+        )
 
-        self.app = Application(
+        self.app: Application[Any] = Application(
             layout=Layout(root, focused_element=self.input_buffer),
             key_bindings=kb,
             style=style,
@@ -225,9 +224,7 @@ class HurrmesApp:
                     self._invalidate()
                 elif event["type"] == "done":
                     if self._accumulated:
-                        self.messages.append(
-                            {"role": "assistant", "content": self._accumulated}
-                        )
+                        self.messages.append({"role": "assistant", "content": self._accumulated})
                         self.conversation_lines.append(self._accumulated)
                         self._accumulated = ""
 
@@ -235,9 +232,7 @@ class HurrmesApp:
                     usage = event.get("usage", {})
                     if usage:
                         self.dashboard.prompt_tokens = usage.get("prompt_tokens", 0)
-                        self.dashboard.completion_tokens = usage.get(
-                            "completion_tokens", 0
-                        )
+                        self.dashboard.completion_tokens = usage.get("completion_tokens", 0)
                         self.dashboard.total_tokens = usage.get("total_tokens", 0)
                         self.dashboard.api_calls += 1
                     self._is_streaming = False
@@ -273,7 +268,7 @@ class HurrmesApp:
             cols -= 38  # dashboard width + border + padding
         return max(cols - 2, 40)
 
-    def _get_transcript_fragments(self):
+    def _get_transcript_fragments(self) -> list[tuple[str, str]]:
         """Generate formatted text for the conversation transcript."""
         width = self._get_transcript_width()
         fragments = []
@@ -292,11 +287,11 @@ class HurrmesApp:
                 fragments.append(("", "\n"))
 
         if self._accumulated:
-            fragments.append(("fg:#eceae5", self._accumulated[:width * 3]))
+            fragments.append(("fg:#eceae5", self._accumulated[: width * 3]))
 
         return fragments
 
-    def _get_statusbar_fragments(self):
+    def _get_statusbar_fragments(self) -> list[tuple[str, str]]:
         """Generate formatted text for the bottom status bar."""
         cols = self.app.output.get_size().columns if self.app.output else 80
         model = self.config.default_model
@@ -327,26 +322,25 @@ class HurrmesApp:
             ("class:status-bar", right),
         ]
 
-    def _get_dashboard_fragments(self):
+    def _get_dashboard_fragments(self) -> list[tuple[str, str]]:
         """Generate formatted text for the right-side dashboard panel."""
-        cols = self.app.output.get_size().columns if self.app.output else 80
         dash_w = 34  # inner width
-        f: list = []
+        f: list[tuple[str, str]] = []
 
-        def sep():
+        def sep() -> None:
             f.append(("class:dashboard-dim", f"{'─' * dash_w}"))
 
-        def section(title: str):
+        def section(title: str) -> None:
             f.append(("class:dashboard-section", f"  {title}"))
             f.append(("", "\n"))
 
-        def label_value(label: str, value: str, value_style: str = "class:dashboard-value"):
+        def label_value(label: str, value: str, value_style: str = "class:dashboard-value") -> None:
             label_t = f"{label}:".ljust(12)
             f.append(("class:dashboard-label", f"  {label_t}"))
             f.append((value_style, value))
             f.append(("", "\n"))
 
-        def sub_text(text: str):
+        def sub_text(text: str) -> None:
             f.append(("class:dashboard-dim", f"  {text}"))
             f.append(("", "\n"))
 
@@ -373,7 +367,7 @@ class HurrmesApp:
         branch = self.dashboard.git_branch or get_git_branch()
         self.dashboard.cwd = cwd
         self.dashboard.git_branch = branch
-        label_value("cwd", cwd[:dash_w - 16])
+        label_value("cwd", cwd[: dash_w - 16])
         if branch:
             label_value("branch", branch)
 
@@ -400,7 +394,7 @@ class HurrmesApp:
         else:
             for t in todos:
                 icon = "☐" if t.status == "pending" else "◐" if t.status == "in_progress" else "☑"
-                label_value(f"{icon}", t.content[:dash_w - 16])
+                label_value(f"{icon}", t.content[: dash_w - 16])
 
         sep()
         f.append(("", "\n"))
@@ -425,12 +419,8 @@ class HurrmesApp:
     async def run(self) -> None:
         """Start the application."""
         # Welcome message
-        self.conversation_lines.append(
-            "Connected to Hermes API at " + self.config.server.base_url
-        )
-        self.conversation_lines.append(
-            "Type a message and press Enter to chat."
-        )
+        self.conversation_lines.append("Connected to Hermes API at " + self.config.server.base_url)
+        self.conversation_lines.append("Type a message and press Enter to chat.")
         self.conversation_lines.append("")
 
         # Collect initial dashboard data
@@ -441,9 +431,9 @@ class HurrmesApp:
 
 def main() -> None:
     """Entry point."""
-    app = HurrmesApp()
+    app: HurrmesApp = HurrmesApp()
 
-    def handle_sigint(sig, frame):
+    def handle_sigint(_sig: int, _frame: object | None) -> None:
         if app._is_streaming:
             app._is_streaming = False
         else:
@@ -451,10 +441,8 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(app.run())
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ The dashboard lives on the right side of the terminal on wide displays.
 from __future__ import annotations
 
 import os
-import platform
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -83,7 +82,7 @@ def format_cwd(path: str, max_len: int = 40) -> str:
     """Compact working directory display."""
     home = str(Path.home())
     if path.startswith(home):
-        path = "~" + path[len(home):]
+        path = "~" + path[len(home) :]
     if len(path) > max_len:
         parts = path.split("/")
         if len(parts) > 3:

@@ -17,7 +17,7 @@ def main() -> None:
         print(__doc__)
         return
     if "--config" in sys.argv:
-        from hurrmes.config import HURRMES_HOME, DEFAULT_CONFIG_PATH
+        from hurrmes.config import DEFAULT_CONFIG_PATH, HURRMES_HOME
 
         from_path = DEFAULT_CONFIG_PATH
         print(f"HURRMES_HOME: {HURRMES_HOME}")

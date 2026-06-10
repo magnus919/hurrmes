@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import time
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import httpx
 
@@ -32,9 +33,9 @@ class HermesClient:
 
     async def chat_stream(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         model: str = "hermes-agent",
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion from the Hermes API Server.
 
         Yields dicts with keys:
@@ -80,21 +81,17 @@ class HermesClient:
                             continue
 
                         # Delta content
-                        delta = (
-                            chunk.get("choices", [{}])[0]
-                            .get("delta", {})
-                            .get("content", "")
-                        )
+                        delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
                         if delta:
                             yield {"type": "delta", "content": delta}
 
                         # Usage (may appear mid-stream or on last chunk)
-                        if "usage" in chunk and chunk["usage"]:
+                        if chunk.get("usage"):
                             usage = chunk["usage"]
 
-                        # Session ID from headers
-                        if "X-Hermes-Session-Id" in resp.headers:
-                            self._session_id = resp.headers["X-Hermes-Session-Id"]
+                    # Session ID from headers (set once after stream completes)
+                    if "X-Hermes-Session-Id" in resp.headers:
+                        self._session_id = resp.headers["X-Hermes-Session-Id"]
 
                     elapsed = time.monotonic() - start
                     yield {
@@ -117,9 +114,9 @@ class HermesClient:
 
     async def chat(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         model: str = "hermes-agent",
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Non-streaming chat completion. Returns final response dict."""
         body = {
             "model": model,
@@ -138,7 +135,7 @@ class HermesClient:
                 data = resp.json()
                 if "X-Hermes-Session-Id" in resp.headers:
                     self._session_id = resp.headers["X-Hermes-Session-Id"]
-                return data
+                return data  # type: ignore[no-any-return]
             except httpx.HTTPStatusError as e:
                 return {"error": str(e), "status": e.response.status_code}
             except httpx.ConnectError as e:
